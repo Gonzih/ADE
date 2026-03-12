@@ -23,6 +23,8 @@ const ADAPTER_DEFAULTS: Record<AdapterType, string> = {
   http: JSON.stringify({ url: "http://localhost:8080/run", method: "POST" }, null, 2),
 };
 
+const COMMON_LABORS = ["backend", "frontend", "devops", "design", "research", "pm", "qa", "data", "security"];
+
 export default function CreateAgentModal({ agents, onCreated, onClose }: Props) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("general");
@@ -32,6 +34,8 @@ export default function CreateAgentModal({ agents, onCreated, onClose }: Props) 
   const [adapterConfig, setAdapterConfig] = useState(ADAPTER_DEFAULTS.mock);
   const [configError, setConfigError] = useState("");
   const [loading, setLoading] = useState(false);
+  // DF labors — which work types this agent can claim autonomously
+  const [labors, setLabors] = useState<Record<string, boolean>>({});
 
   const handleAdapterChange = (t: AdapterType) => {
     setAdapterType(t);
@@ -60,6 +64,7 @@ export default function CreateAgentModal({ agents, onCreated, onClose }: Props) 
         adapterType,
         adapterConfig: parsedConfig,
         reportsTo: reportsTo || null,
+        labors: Object.keys(labors).length > 0 ? labors : undefined,
       });
       onCreated();
       onClose();
@@ -164,6 +169,38 @@ export default function CreateAgentModal({ agents, onCreated, onClose }: Props) 
                 <option key={a.id} value={a.id}>{a.name} ({a.role})</option>
               ))}
             </select>
+          </Field>
+
+          {/* Labors (DF job-board opt-in) */}
+          <Field label="labors (autonomous work types)">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {COMMON_LABORS.map((labor) => {
+                const active = !!labors[labor];
+                return (
+                  <button
+                    key={labor}
+                    type="button"
+                    onClick={() => setLabors((prev) => ({ ...prev, [labor]: !prev[labor] }))}
+                    style={{
+                      padding: "3px 10px",
+                      fontSize: 10,
+                      fontFamily: "var(--font-mono)",
+                      borderRadius: 10,
+                      border: `1px solid ${active ? "var(--accent-cyan)" : "var(--border)"}`,
+                      color: active ? "var(--accent-cyan)" : "var(--text-dim)",
+                      background: active ? "rgba(0,221,255,0.08)" : "transparent",
+                      cursor: "pointer",
+                      transition: "all 0.1s",
+                    }}
+                  >
+                    {active ? "✓ " : ""}{labor}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}>
+              enabled labors = issues this agent will autonomously claim
+            </div>
           </Field>
 
           {/* Adapter type */}

@@ -80,6 +80,26 @@ export interface CreateAgentInput {
   adapterConfig: Record<string, unknown>;
   reportsTo: string | null;
   budgetMonthlyCents?: number;
+  labors?: Record<string, boolean>;
+}
+
+export interface AgentSkill {
+  id: string;
+  agentId: string;
+  domain: string;
+  level: number;
+  completions: number;
+}
+
+export interface ActivityEvent {
+  id: string;
+  actorType: string;
+  actorId: string;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
 }
 
 // IPC channel names
@@ -93,9 +113,12 @@ export const IPC = {
   AGENT_CREATE: "agent:create",
   AGENT_DELETE: "agent:delete",
   AGENT_UPDATE_REPORTS_TO: "agent:update-reports-to",
+  AGENT_SKILLS: "agent:skills",
+  AGENT_HISTORY: "agent:history",
   RUN_EVENTS: "run:events",
   ISSUES_LIST: "issues:list",
   ISSUE_UPDATE_STATUS: "issue:update-status",
+  ISSUE_SPAWN_SUB: "issue:spawn-sub",
   DB_READY: "db:ready",
   REALTIME_UPDATE: "realtime:update",
 } as const;

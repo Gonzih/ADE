@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect } from "react";
-import type { AgentRow, AgentStats, RunRow } from "../hooks/useAgents";
+import type { AgentRow, AgentStats, RunRow, AgentSkillRow, ActivityEventRow } from "../hooks/useAgents";
 import RunLogViewer from "./RunLogViewer";
 
 interface Props {
@@ -37,15 +37,26 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   timed_out: "var(--accent-amber)",
 };
 
+type SidebarTab = "status" | "skills" | "history";
+
 export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, onResume, onClose, onDelete }: Props) {
   const [runs, setRuns] = useState<RunRow[]>([]);
+  const [skills, setSkills] = useState<AgentSkillRow[]>([]);
+  const [history, setHistory] = useState<ActivityEventRow[]>([]);
   const [wakeupReason, setWakeupReason] = useState("");
   const [selectedRun, setSelectedRun] = useState<RunRow | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [tab, setTab] = useState<SidebarTab>("status");
 
   useEffect(() => {
     if (!window.ade) return;
     window.ade.agents.runs(agent.id).then(setRuns).catch(console.error);
+  }, [agent.id, stats?.activeRun?.id]);
+
+  useEffect(() => {
+    if (!window.ade) return;
+    window.ade.agents.skills(agent.id).then(setSkills).catch(console.error);
+    window.ade.agents.history(agent.id, 40).then(setHistory).catch(console.error);
   }, [agent.id, stats?.activeRun?.id]);
 
   const reportsToAgent = agent.reports_to
@@ -124,84 +135,149 @@ export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, 
         </button>
       </div>
 
+      {/* Tab bar */}
+      <div style={{
+        display: "flex",
+        borderBottom: "1px solid var(--border)",
+        padding: "0 16px",
+        gap: 0,
+      }}>
+        {(["status", "skills", "history"] as SidebarTab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              padding: "8px 12px",
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              color: tab === t ? "var(--accent-cyan)" : "var(--text-dim)",
+              background: "transparent",
+              borderBottom: tab === t ? "2px solid var(--accent-cyan)" : "2px solid transparent",
+              marginBottom: -1,
+              transition: "color 0.1s",
+              cursor: "pointer",
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
       <div style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
         {/* Status + controls */}
-        <Section title="Status">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <StatusBadge status={agent.status} />
-            <div style={{ display: "flex", gap: 6 }}>
-              {agent.status === "running" ? (
-                <CtrlButton label="Pause" color="var(--accent-amber)" onClick={() => onPause(agent.id)} />
-              ) : agent.status === "paused" ? (
-                <CtrlButton label="Resume" color="var(--accent-blue)" onClick={() => onResume(agent.id)} />
-              ) : null}
-              <CtrlButton
-                label="Wake"
-                color="var(--accent-green)"
-                onClick={() => onWakeup(agent.id, wakeupReason || undefined)}
-                disabled={agent.status === "running"}
-              />
+        {tab === "status" && (
+          <Section title="Status">
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <StatusBadge status={agent.status} />
+              <div style={{ display: "flex", gap: 6 }}>
+                {agent.status === "running" ? (
+                  <CtrlButton label="Pause" color="var(--accent-amber)" onClick={() => onPause(agent.id)} />
+                ) : agent.status === "paused" ? (
+                  <CtrlButton label="Resume" color="var(--accent-blue)" onClick={() => onResume(agent.id)} />
+                ) : null}
+                <CtrlButton
+                  label="Wake"
+                  color="var(--accent-green)"
+                  onClick={() => onWakeup(agent.id, wakeupReason || undefined)}
+                  disabled={agent.status === "running"}
+                />
+              </div>
             </div>
-          </div>
-          <input
-            placeholder="wakeup reason (optional)"
-            value={wakeupReason}
-            onChange={(e) => setWakeupReason(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "6px 10px",
-              fontSize: 11,
-              marginTop: 8,
-            }}
-          />
-        </Section>
+            <input
+              placeholder="wakeup reason (optional)"
+              value={wakeupReason}
+              onChange={(e) => setWakeupReason(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "6px 10px",
+                fontSize: 11,
+                marginTop: 8,
+              }}
+            />
+          </Section>
+        )}
 
         {/* Active run */}
-        {stats?.activeRun && (
+        {tab === "status" && stats?.activeRun && (
           <Section title="Active Run">
             <RunRow run={stats.activeRun} live />
           </Section>
         )}
 
         {/* Stats */}
-        <Section title="Stats">
-          <div style={{ display: "flex", gap: 16 }}>
-            <Metric label="total runs" value={stats?.runCount ?? 0} />
-            <Metric label="open issues" value={stats?.openIssues ?? 0} color="var(--accent-amber)" />
-          </div>
-          {stats && stats.budgetMonthlyCents > 0 && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-dim)", marginBottom: 4 }}>
-                <span>budget</span>
-                <span style={{ fontFamily: "var(--font-mono)", color: budgetPct > 80 ? "var(--accent-red)" : "var(--text-secondary)" }}>
-                  ${(stats.spentMonthlyCents / 100).toFixed(2)} / ${(stats.budgetMonthlyCents / 100).toFixed(2)}
-                </span>
-              </div>
-              <div style={{ height: 4, background: "var(--bg-elevated)", borderRadius: 2, overflow: "hidden" }}>
-                <div style={{
-                  height: "100%",
-                  width: `${Math.min(100, budgetPct)}%`,
-                  background: budgetPct > 80 ? "var(--accent-red)" : "var(--accent-green)",
-                  borderRadius: 2,
-                  transition: "width 0.3s ease",
-                }} />
-              </div>
+        {tab === "status" && (
+          <Section title="Stats">
+            <div style={{ display: "flex", gap: 16 }}>
+              <Metric label="total runs" value={stats?.runCount ?? 0} />
+              <Metric label="open issues" value={stats?.openIssues ?? 0} color="var(--accent-amber)" />
+              <Metric
+                label="health"
+                value={agent.health_score ?? 100}
+                color={(agent.health_score ?? 100) >= 70 ? "var(--accent-green)"
+                  : (agent.health_score ?? 100) >= 40 ? "var(--accent-amber)"
+                  : "var(--accent-red)"}
+              />
             </div>
-          )}
-        </Section>
+            {stats && stats.budgetMonthlyCents > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-dim)", marginBottom: 4 }}>
+                  <span>budget</span>
+                  <span style={{ fontFamily: "var(--font-mono)", color: budgetPct > 80 ? "var(--accent-red)" : "var(--text-secondary)" }}>
+                    ${(stats.spentMonthlyCents / 100).toFixed(2)} / ${(stats.budgetMonthlyCents / 100).toFixed(2)}
+                  </span>
+                </div>
+                <div style={{ height: 4, background: "var(--bg-elevated)", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%",
+                    width: `${Math.min(100, budgetPct)}%`,
+                    background: budgetPct > 80 ? "var(--accent-red)" : "var(--accent-green)",
+                    borderRadius: 2,
+                    transition: "width 0.3s ease",
+                  }} />
+                </div>
+              </div>
+            )}
+          </Section>
+        )}
 
         {/* Adapter info */}
-        <Section title="Adapter">
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--accent-cyan)" }}>
-            {agent.adapter_type}
-          </div>
-          <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>
-            id: {agent.id.slice(0, 8)}…
-          </div>
-        </Section>
+        {tab === "status" && (
+          <Section title="Adapter">
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--accent-cyan)" }}>
+              {agent.adapter_type}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>
+              id: {agent.id.slice(0, 8)}…
+            </div>
+          </Section>
+        )}
+
+        {/* Labors */}
+        {tab === "status" && agent.labors && Object.keys(agent.labors).length > 0 && (
+          <Section title="Labors">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {Object.entries(agent.labors).map(([labor, enabled]) => (
+                <div
+                  key={labor}
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 10,
+                    fontFamily: "var(--font-mono)",
+                    borderRadius: 10,
+                    background: enabled ? "var(--accent-cyan)22" : "var(--bg-elevated)",
+                    color: enabled ? "var(--accent-cyan)" : "var(--text-dim)",
+                    border: `1px solid ${enabled ? "var(--accent-cyan)44" : "var(--border)"}`,
+                  }}
+                >
+                  {labor}
+                </div>
+              ))}
+            </div>
+          </Section>
+        )}
 
         {/* Recent runs — click to open log viewer */}
-        {runs.length > 0 && (
+        {tab === "status" && runs.length > 0 && (
           <Section title={`Runs (${runs.length})`}>
             <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: selectedRun ? 120 : 240, overflow: "auto" }}>
               {runs.slice(0, 20).map((r) => (
@@ -218,7 +294,6 @@ export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, 
                 </div>
               ))}
             </div>
-            {/* Inline log viewer */}
             {selectedRun && (
               <div style={{ marginTop: 8, height: 240 }}>
                 <RunLogViewer run={selectedRun} agentId={agent.id} />
@@ -227,8 +302,47 @@ export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, 
           </Section>
         )}
 
-        {/* Delete */}
-        {onDelete && (
+        {/* ── Skills Tab — DF skill levels per domain ───────────────────────── */}
+        {tab === "skills" && (
+          <>
+            {skills.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 32 }}>
+                no skills yet<br />
+                <span style={{ fontSize: 10 }}>completes issues to level up</span>
+              </div>
+            ) : (
+              <Section title={`Skills (${skills.length})`}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {skills.map((sk) => (
+                    <SkillBar key={sk.id} skill={sk} />
+                  ))}
+                </div>
+              </Section>
+            )}
+          </>
+        )}
+
+        {/* ── History Tab — Legends Mode audit log ──────────────────────────── */}
+        {tab === "history" && (
+          <>
+            {history.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 32 }}>
+                no history yet
+              </div>
+            ) : (
+              <Section title={`History (${history.length})`}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {history.map((ev) => (
+                    <HistoryRow key={ev.id} event={ev} agentId={agent.id} />
+                  ))}
+                </div>
+              </Section>
+            )}
+          </>
+        )}
+
+        {/* Delete — always at bottom of status tab */}
+        {tab === "status" && onDelete && (
           <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
             {confirmDelete ? (
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -377,4 +491,87 @@ function formatRelative(ts: string): string {
   if (delta < 60) return `${delta}s ago`;
   if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
   return `${Math.round(delta / 3600)}h ago`;
+}
+
+// DF skill bar — shows domain + level + completions
+function SkillBar({ skill }: { skill: AgentSkillRow }) {
+  const maxLevel = 20; // visual cap
+  const pct = Math.min(100, (skill.level / maxLevel) * 100);
+  const color = skill.level >= 15 ? "var(--accent-green)"
+    : skill.level >= 8 ? "var(--accent-cyan)"
+    : "var(--accent-blue)";
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 3 }}>
+        <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          {skill.domain}
+        </span>
+        <span style={{ fontFamily: "var(--font-mono)", color }}>
+          lv.{skill.level} · {skill.completions}x
+        </span>
+      </div>
+      <div style={{ height: 3, background: "var(--bg-elevated)", borderRadius: 2 }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          background: color,
+          borderRadius: 2,
+          transition: "width 0.4s ease",
+        }} />
+      </div>
+    </div>
+  );
+}
+
+// Legends mode — single event row
+const ACTION_ICONS: Record<string, string> = {
+  run_succeeded: "✓",
+  run_failed: "✗",
+  run_cancelled: "◻",
+  issue_claimed: "⚑",
+  issue_released: "↩",
+  sub_issue_spawned: "⎇",
+  sub_issue_routed: "→",
+};
+
+function HistoryRow({ event, agentId }: { event: ActivityEventRow; agentId: string }) {
+  const icon = ACTION_ICONS[event.action] ?? "·";
+  const isError = event.action.includes("failed") || event.action.includes("error");
+  const isSuccess = event.action.includes("succeeded") || event.action.includes("claimed");
+
+  return (
+    <div style={{
+      display: "flex",
+      gap: 8,
+      padding: "5px 6px",
+      borderRadius: "var(--radius-sm)",
+      background: "var(--bg-elevated)",
+      fontSize: 10,
+      alignItems: "flex-start",
+    }}>
+      <span style={{
+        fontFamily: "var(--font-mono)",
+        color: isError ? "var(--accent-red)" : isSuccess ? "var(--accent-green)" : "var(--text-dim)",
+        flexShrink: 0,
+        width: 12,
+        textAlign: "center",
+      }}>
+        {icon}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          {event.action.replace(/_/g, " ")}
+        </span>
+        {event.metadata?.title != null && (
+          <span style={{ color: "var(--text-dim)", marginLeft: 4 }}>
+            {String(event.metadata.title as string).slice(0, 40)}
+          </span>
+        )}
+      </div>
+      <span style={{ color: "var(--text-dim)", flexShrink: 0 }}>
+        {formatRelative(event.created_at)}
+      </span>
+    </div>
+  );
 }

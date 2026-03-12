@@ -1,20 +1,29 @@
 /**
  * Agent Orchestrator
  *
- * Implements Paperclip's DB-as-message-bus pattern:
+ * Implements Paperclip's DB-as-message-bus pattern + Dwarf Fortress coordination model:
  *
- * Poll loop → find queued wakeup requests → atomic claim → launch run → poll events
+ * DF Primitive 1 — Job Broadcast + Agent Self-Selection:
+ *   Issues are broadcast work. Idle agents scan for unclaimed issues matching their
+ *   labors. Highest-skilled agent claims first. No central dispatcher.
  *
- * Key primitives used:
- * 1. Atomic UPDATE WHERE + RETURNING → claim wakeup request (distributed mutex)
- * 2. Status enum poll → discover work (message queue)
- * 3. coalescedCount merging → backpressure (flood control)
+ * DF Primitive 2 — Sub-Agent Spawning:
+ *   When a run inserts child issues (spawned_by_run_id = runId), the orchestrator
+ *   routes them to capable child agents by labor match + skill rank.
+ *   requestDepth tracks nesting depth (prevents infinite spawning).
  *
- * The orchestrator doesn't know HOW agents do their work. It knows:
- * - when to wake them
- * - when they're done
- * - what it cost
- * - how to coalesce burst wakeups into single runs
+ * DF Primitive 3 — Orphan Recovery:
+ *   Stale in_progress issues (executionRunId → run that died) auto-release to 'todo'.
+ *   Stale running heartbeat_runs (no event in 5min) → timed_out, issue released.
+ *
+ * DF Primitive 4 — Health Score:
+ *   Computed after each run. Degrades on consecutive failures, budget exhaustion.
+ *   Lower health → deprioritized in claim ordering (not blocked — DF performance degradation).
+ *
+ * Paperclip primitives:
+ * 1. Atomic UPDATE WHERE + RETURNING → distributed mutex / claim
+ * 2. Status enum + poll → message queue
+ * 3. coalescedCount → backpressure / flood control
  */
 
 import { Pool } from "pg";
@@ -34,6 +43,11 @@ export interface OrchestratorEvents {
   runCompleted: (result: AgentRunResult) => void;
   agentStatusChanged: (agentId: string, status: string) => void;
   wakeupCoalesced: (agentId: string, count: number) => void;
+  issueClaimed: (issueId: string, agentId: string) => void;
+  issueReleased: (issueId: string, reason: string) => void;
+  subIssueSpawned: (parentIssueId: string, childIssueId: string, agentId: string) => void;
+  orphanRecovered: (count: number) => void;
+  healthScoreUpdated: (agentId: string, score: number) => void;
 }
 
 // In-process promise chains — serialize concurrent requests per agent
@@ -159,7 +173,7 @@ export class AgentOrchestrator extends EventEmitter {
   }
 
   private async poll(): Promise<void> {
-    // Find queued wakeup requests — atomic claim via UPDATE WHERE + RETURNING
+    // ── 1. Paperclip wakeup requests (manual/external triggers) ──────────────
     const { rows: pending } = await this.pool.query(`
       UPDATE agent_wakeup_requests
       SET status = 'claimed', claimed_at = NOW(), updated_at = NOW()
@@ -178,15 +192,7 @@ export class AgentOrchestrator extends EventEmitter {
       );
     }
 
-    // Check for stuck runs (execution_locked_at > 5min ago) — mark timed_out
-    await this.pool.query(`
-      UPDATE heartbeat_runs
-      SET status = 'timed_out', finished_at = NOW(), updated_at = NOW()
-      WHERE status = 'running'
-        AND started_at < NOW() - INTERVAL '10 minutes'
-    `);
-
-    // Promote deferred requests when agent goes idle
+    // Promote deferred when agent goes idle
     await this.pool.query(`
       UPDATE agent_wakeup_requests
       SET status = 'queued', updated_at = NOW()
@@ -195,6 +201,168 @@ export class AgentOrchestrator extends EventEmitter {
           SELECT agent_id FROM heartbeat_runs WHERE status = 'running'
         )
     `);
+
+    // ── 2. DF Job Broadcast — idle agents self-select unclaimed issues ────────
+    await this.autonomousIssueClaim();
+
+    // ── 3. Orphan recovery — stale runs + stuck issues ─────────────────────
+    await this.recoverOrphans();
+  }
+
+  /**
+   * DF Job Broadcast Pattern:
+   * For each idle agent with enabled labors, atomically claim the highest-priority
+   * unclaimed issue matching those labors. Skill level breaks ties.
+   *
+   * Claim query: UPDATE WHERE status='todo' AND (required_labor IS NULL OR agent labors match)
+   * → RETURNING → launch wakeup with issue context
+   */
+  private async autonomousIssueClaim(): Promise<void> {
+    // Find idle agents that have labors defined (opt-in to autonomous claiming)
+    const { rows: idleAgents } = await this.pool.query(`
+      SELECT a.id, a.name, a.labors, a.health_score, a.adapter_type
+      FROM agents a
+      WHERE a.status = 'idle'
+        AND a.labors != '{}'::jsonb
+        AND a.id NOT IN (
+          SELECT agent_id FROM heartbeat_runs WHERE status = 'running'
+        )
+      ORDER BY a.health_score DESC
+      LIMIT 20
+    `);
+
+    for (const agent of idleAgents) {
+      // Atomically claim the best matching issue for this agent
+      // Priority order: urgent > high > medium > low, then oldest first
+      // Skill match: prefer issues where agent has skill level in required_labor
+      const { rows: claimed } = await this.pool.query(`
+        UPDATE issues
+        SET status = 'in_progress',
+            assignee_agent_id = $1,
+            execution_locked_at = NOW(),
+            started_at = COALESCE(started_at, NOW()),
+            updated_at = NOW()
+        WHERE id = (
+          SELECT i.id FROM issues i
+          WHERE i.status = 'todo'
+            AND i.assignee_agent_id IS NULL
+            AND (
+              i.required_labor IS NULL
+              OR ($2::jsonb ->> i.required_labor) = 'true'
+            )
+          ORDER BY
+            CASE i.priority
+              WHEN 'urgent' THEN 1
+              WHEN 'high'   THEN 2
+              WHEN 'medium' THEN 3
+              WHEN 'low'    THEN 4
+              ELSE 5
+            END ASC,
+            COALESCE((
+              SELECT s.level FROM agent_skills s
+              WHERE s.agent_id = $1 AND s.domain = i.required_labor
+            ), 0) DESC,
+            i.created_at ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, title, required_labor, parent_id, request_depth
+      `, [agent.id, agent.labors]);
+
+      if (!claimed.length) continue;
+
+      const issue = claimed[0];
+      this.emit("issueClaimed", issue.id, agent.id);
+
+      // Log to activity
+      await this.pool.query(`
+        INSERT INTO activity_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('system', $1, 'issue_claimed', 'issue', $2, $3)
+      `, [agent.id, issue.id, JSON.stringify({ title: issue.title, required_labor: issue.required_labor })]);
+
+      // Trigger wakeup with issue context in payload
+      await this.requestWakeup(agent.id, "issue_claim", `work on: ${issue.title}`, {
+        issueId: issue.id,
+        issueTitle: issue.title,
+        requiredLabor: issue.required_labor,
+        parentId: issue.parent_id,
+        requestDepth: issue.request_depth,
+      });
+    }
+  }
+
+  /**
+   * DF Orphan Recovery:
+   * 1. Heartbeat runs stuck 'running' with no recent event → timed_out + release issue
+   * 2. Issues stuck 'in_progress' with dead/missing execution run → back to 'todo'
+   * 3. Issues stuck 'in_progress' for > 30min with no run → back to 'todo'
+   */
+  private async recoverOrphans(): Promise<void> {
+    // Stale runs: running > 10min or no events in last 5min
+    const { rows: staleRuns } = await this.pool.query(`
+      UPDATE heartbeat_runs
+      SET status = 'timed_out', finished_at = NOW(), updated_at = NOW(),
+          error = 'timed out by orphan recovery'
+      WHERE status = 'running'
+        AND (
+          started_at < NOW() - INTERVAL '10 minutes'
+          OR (
+            started_at < NOW() - INTERVAL '5 minutes'
+            AND id NOT IN (
+              SELECT DISTINCT run_id FROM heartbeat_run_events
+              WHERE created_at > NOW() - INTERVAL '5 minutes'
+            )
+          )
+        )
+      RETURNING id, agent_id
+    `);
+
+    if (staleRuns.length > 0) {
+      // Reset agent status for stale runs
+      for (const run of staleRuns) {
+        await this.pool.query(
+          `UPDATE agents SET status = 'idle', updated_at = NOW() WHERE id = $1`,
+          [run.agent_id]
+        );
+        this.activeRuns.delete(run.agent_id);
+        this.emit("agentStatusChanged", run.agent_id, "idle");
+      }
+    }
+
+    // Release orphaned in_progress issues:
+    // - execution_locked_at > 30min ago
+    // - OR execution_run_id → run that is now terminal
+    const { rows: released } = await this.pool.query(`
+      UPDATE issues
+      SET status = 'todo',
+          assignee_agent_id = NULL,
+          execution_run_id = NULL,
+          execution_locked_at = NULL,
+          updated_at = NOW()
+      WHERE status = 'in_progress'
+        AND (
+          execution_locked_at < NOW() - INTERVAL '30 minutes'
+          OR (
+            execution_run_id IS NOT NULL
+            AND execution_run_id IN (
+              SELECT id FROM heartbeat_runs
+              WHERE status IN ('timed_out', 'failed', 'cancelled')
+            )
+          )
+        )
+      RETURNING id, title
+    `);
+
+    if (released.length > 0) {
+      this.emit("orphanRecovered", released.length);
+      for (const issue of released) {
+        this.emit("issueReleased", issue.id, "orphan_recovery");
+        await this.pool.query(`
+          INSERT INTO activity_log (actor_type, actor_id, action, target_type, target_id, metadata)
+          VALUES ('system', 'orchestrator', 'issue_released', 'issue', $1, $2)
+        `, [issue.id, JSON.stringify({ title: issue.title, reason: "orphan_recovery" })]);
+      }
+    }
   }
 
   private async launchRun(
@@ -431,6 +599,62 @@ export class AgentOrchestrator extends EventEmitter {
     }
   }
 
+  /**
+   * Spawn a sub-issue from within a run.
+   * The sub-issue will be routed to a capable child agent after the parent run completes.
+   * requestDepth is auto-incremented to prevent infinite spawning (max 5).
+   */
+  async spawnSubIssue(
+    runId: string,
+    parentAgentId: string,
+    title: string,
+    description: string | null,
+    requiredLabor: string | null,
+    parentIssueId?: string
+  ): Promise<string | null> {
+    // Get parent issue depth
+    const parentDepth = parentIssueId
+      ? (await this.pool.query(`SELECT request_depth FROM issues WHERE id = $1`, [parentIssueId])).rows[0]?.request_depth ?? 0
+      : 0;
+
+    if (parentDepth >= 5) {
+      console.warn("[orchestrator] spawn blocked — max depth 5 reached");
+      return null;
+    }
+
+    const { rows } = await this.pool.query(`
+      INSERT INTO issues
+        (title, description, status, required_labor, spawned_by_run_id, parent_id,
+         request_depth, created_by_agent_id, priority)
+      VALUES ($1, $2, 'backlog', $3, $4, $5, $6, $7, 'medium')
+      RETURNING id
+    `, [
+      title,
+      description ?? null,
+      requiredLabor ?? null,
+      runId,
+      parentIssueId ?? null,
+      parentDepth + 1,
+      parentAgentId,
+    ]);
+
+    const issueId = rows[0].id;
+
+    await this.appendEvent(runId, "sub_issue_spawned", {
+      issueId,
+      title,
+      requiredLabor,
+      requestDepth: parentDepth + 1,
+    });
+
+    await this.pool.query(`
+      INSERT INTO activity_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('agent', $1, 'sub_issue_spawned', 'issue', $2, $3)
+    `, [parentAgentId, issueId, JSON.stringify({ title, requiredLabor, runId })]);
+
+    return issueId;
+  }
+
   private async appendEvent(
     runId: string,
     eventType: string,
@@ -468,11 +692,184 @@ export class AgentOrchestrator extends EventEmitter {
 
     this.activeRuns.delete(agentId);
 
+    // ── Post-run: DF skill increment + issue release + health update ──────────
+    await this.postRunBookkeeping(runId, agentId, status);
+
     const result: AgentRunResult = { agentId, runId, status, exitCode };
     if (error) result.error = error;
     if (stdoutExcerpt) result.stdoutExcerpt = stdoutExcerpt;
 
     this.emit("runCompleted", result);
     this.emit("agentStatusChanged", agentId, "idle");
+  }
+
+  /**
+   * Post-run bookkeeping — runs after every run completion:
+   *
+   * 1. Release any issues claimed by this run (mark done/release on failure)
+   * 2. DF Skill Model: increment skill level on successful issue completion
+   * 3. Sub-issue routing: route spawned child issues to capable agents
+   * 4. Health score recompute (DF performance degradation model)
+   * 5. Activity log entry
+   */
+  private async postRunBookkeeping(
+    runId: string,
+    agentId: string,
+    status: "succeeded" | "failed" | "cancelled"
+  ): Promise<void> {
+    // ── 1. Release claimed issues ─────────────────────────────────────────────
+    if (status === "succeeded") {
+      // Mark issues completed
+      await this.pool.query(`
+        UPDATE issues
+        SET status = 'done', completed_at = NOW(), updated_at = NOW()
+        WHERE execution_run_id = $1 OR (assignee_agent_id = $2 AND status = 'in_progress')
+      `, [runId, agentId]);
+    } else if (status === "failed" || status === "cancelled") {
+      // Release back to todo for retry
+      const { rows: releasedIssues } = await this.pool.query(`
+        UPDATE issues
+        SET status = 'todo',
+            assignee_agent_id = NULL,
+            execution_run_id = NULL,
+            execution_locked_at = NULL,
+            updated_at = NOW()
+        WHERE (execution_run_id = $1 OR (assignee_agent_id = $2 AND status = 'in_progress'))
+        RETURNING id, title, required_labor
+      `, [runId, agentId]);
+
+      for (const issue of releasedIssues) {
+        this.emit("issueReleased", issue.id, `run_${status}`);
+      }
+    }
+
+    // ── 2. DF Skill increment on success ──────────────────────────────────────
+    if (status === "succeeded") {
+      // Find what labor domain this run worked on
+      const { rows: issueDomains } = await this.pool.query(`
+        SELECT DISTINCT required_labor FROM issues
+        WHERE (execution_run_id = $1 OR assignee_agent_id = $2)
+          AND required_labor IS NOT NULL
+          AND status = 'done'
+      `, [runId, agentId]);
+
+      for (const row of issueDomains) {
+        if (!row.required_labor) continue;
+        // UPSERT skill: insert level=1 or increment existing
+        await this.pool.query(`
+          INSERT INTO agent_skills (agent_id, domain, level, completions)
+          VALUES ($1, $2, 1, 1)
+          ON CONFLICT (agent_id, domain)
+          DO UPDATE SET
+            level = LEAST(agent_skills.level + 1, 99),
+            completions = agent_skills.completions + 1,
+            updated_at = NOW()
+        `, [agentId, row.required_labor]);
+      }
+    }
+
+    // ── 3. Route spawned sub-issues to capable child agents ───────────────────
+    // Issues created during this run (spawned_by_run_id = runId) need routing
+    const { rows: subIssues } = await this.pool.query(`
+      SELECT i.id, i.title, i.required_labor, i.request_depth, i.parent_id
+      FROM issues i
+      WHERE i.spawned_by_run_id = $1
+        AND i.status = 'backlog'
+        AND i.request_depth < 5
+    `, [runId]);
+
+    for (const sub of subIssues) {
+      // Find the best capable child agent (reports_to = agentId, labor matches, idle)
+      const { rows: candidates } = await this.pool.query(`
+        SELECT a.id, a.name,
+               COALESCE(s.level, 0) AS skill_level
+        FROM agents a
+        LEFT JOIN agent_skills s ON s.agent_id = a.id AND s.domain = $1
+        WHERE a.reports_to = $2
+          AND a.status = 'idle'
+          AND (
+            $1 IS NULL
+            OR (a.labors ->> $1)::boolean = true
+          )
+        ORDER BY skill_level DESC, a.health_score DESC
+        LIMIT 1
+      `, [sub.required_labor, agentId]);
+
+      if (!candidates.length) {
+        // No child available — promote to todo for open broadcast
+        await this.pool.query(`
+          UPDATE issues SET status = 'todo', updated_at = NOW() WHERE id = $1
+        `, [sub.id]);
+        continue;
+      }
+
+      const child = candidates[0];
+      // Assign to child agent
+      await this.pool.query(`
+        UPDATE issues
+        SET status = 'in_progress',
+            assignee_agent_id = $1,
+            execution_locked_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $2
+      `, [child.id, sub.id]);
+
+      this.emit("subIssueSpawned", sub.parent_id ?? sub.id, sub.id, child.id);
+
+      await this.pool.query(`
+        INSERT INTO activity_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('system', $1, 'sub_issue_routed', 'issue', $2, $3)
+      `, [agentId, sub.id, JSON.stringify({ childAgentId: child.id, title: sub.title })]);
+
+      // Wake the child agent
+      await this.requestWakeup(child.id, "sub_issue", `sub-task: ${sub.title}`, {
+        issueId: sub.id,
+        issueTitle: sub.title,
+        parentIssueId: sub.parent_id,
+        requestDepth: sub.request_depth,
+      });
+    }
+
+    // ── 4. Health score recompute (DF performance degradation) ────────────────
+    // health = 100 - (consecutive_failures * 15) - (budget_exhaustion_pct * 30)
+    // Clamped 0-100. Agents degrade gracefully, never blocked.
+    const { rows: healthData } = await this.pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'failed') AS recent_failures,
+        COUNT(*) FILTER (WHERE status = 'succeeded') AS recent_successes,
+        (SELECT budget_monthly_cents FROM agents WHERE id = $1) AS budget,
+        (SELECT spent_monthly_cents FROM agents WHERE id = $1) AS spent
+      FROM heartbeat_runs
+      WHERE agent_id = $1
+        AND created_at > NOW() - INTERVAL '24 hours'
+    `, [agentId]);
+
+    if (healthData.length) {
+      const { recent_failures, recent_successes, budget, spent } = healthData[0];
+      const failures = parseInt(recent_failures, 10);
+      const successes = parseInt(recent_successes, 10);
+      const totalRecent = failures + successes;
+      const failureRate = totalRecent > 0 ? failures / totalRecent : 0;
+      const budgetPct = budget > 0 ? parseInt(spent, 10) / parseInt(budget, 10) : 0;
+
+      // DF model: degradation not binary. Health affects priority, not availability.
+      const healthScore = Math.max(0, Math.min(100, Math.round(
+        100
+        - (failureRate * 40)          // up to -40 for all failures
+        - (Math.max(0, budgetPct - 0.8) * 100) // up to -20 for >80% budget used
+      )));
+
+      await this.pool.query(`
+        UPDATE agents SET health_score = $1, updated_at = NOW() WHERE id = $2
+      `, [healthScore, agentId]);
+
+      this.emit("healthScoreUpdated", agentId, healthScore);
+    }
+
+    // ── 5. Activity log ───────────────────────────────────────────────────────
+    await this.pool.query(`
+      INSERT INTO activity_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('agent', $1, $2, 'run', $3, $4)
+    `, [agentId, `run_${status}`, runId, JSON.stringify({ status })]);
   }
 }

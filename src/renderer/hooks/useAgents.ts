@@ -8,6 +8,7 @@ export interface CreateAgentInput {
   adapterConfig: Record<string, unknown>;
   reportsTo: string | null;
   budgetMonthlyCents?: number;
+  labors?: Record<string, boolean>;
 }
 
 export interface RunEventRow {
@@ -16,6 +17,26 @@ export interface RunEventRow {
   seq: number;
   event_type: string;
   body: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentSkillRow {
+  id: string;
+  agent_id: string;
+  domain: string;
+  level: number;
+  completions: number;
+  updated_at: string;
+}
+
+export interface ActivityEventRow {
+  id: string;
+  actor_type: string;
+  actor_id: string;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -32,6 +53,8 @@ declare global {
         create: (input: CreateAgentInput) => Promise<AgentRow>;
         delete: (agentId: string) => Promise<{ ok: boolean }>;
         updateReportsTo: (agentId: string, reportsTo: string | null) => Promise<{ ok: boolean }>;
+        skills: (agentId: string) => Promise<AgentSkillRow[]>;
+        history: (agentId: string, limit?: number) => Promise<ActivityEventRow[]>;
       };
       runs: {
         events: (runId: string, afterSeq: number) => Promise<RunEventRow[]>;
@@ -39,6 +62,14 @@ declare global {
       issues: {
         list: (agentId?: string) => Promise<IssueRow[]>;
         updateStatus: (issueId: string, status: string) => Promise<{ ok: boolean }>;
+        spawnSub: (input: {
+          runId: string;
+          agentId: string;
+          title: string;
+          description?: string;
+          requiredLabor?: string;
+          parentIssueId?: string;
+        }) => Promise<{ issueId: string | null }>;
       };
       onRealtimeUpdate: (cb: (data: RealtimeEvent) => void) => () => void;
       onDbReady: (cb: (ready: boolean) => void) => void;
@@ -57,6 +88,8 @@ export interface AgentRow {
   budget_monthly_cents: number;
   spent_monthly_cents: number;
   last_heartbeat_at: string | null;
+  labors: Record<string, boolean>;
+  health_score: number;
 }
 
 export interface RunRow {
@@ -91,10 +124,18 @@ export interface IssueRow {
 }
 
 export interface RealtimeEvent {
-  type: "runStarted" | "runCompleted" | "agentStatus";
+  type: "runStarted" | "runCompleted" | "agentStatus"
+      | "issueClaimed" | "issueReleased" | "subIssueSpawned"
+      | "orphanRecovered" | "healthScore";
   agentId?: string;
   runId?: string;
   status?: string;
+  issueId?: string;
+  reason?: string;
+  parentIssueId?: string;
+  childIssueId?: string;
+  count?: number;
+  score?: number;
 }
 
 export function useAgents() {
@@ -122,17 +163,14 @@ export function useAgents() {
   }, []);
 
   useEffect(() => {
-    // Wait for DB ready signal or try anyway after 500ms
     if (window.ade) {
       window.ade.onDbReady((ready) => {
         setDbReady(ready);
         refresh();
       });
-      // Fallback — also try immediately
       setTimeout(refresh, 500);
     }
 
-    // Poll every 2s for status updates
     pollRef.current = setInterval(refresh, 2000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -141,10 +179,7 @@ export function useAgents() {
 
   useEffect(() => {
     if (!window.ade) return;
-    const unsub = window.ade.onRealtimeUpdate((event) => {
-      // Realtime update → immediate refresh
-      refresh();
-    });
+    const unsub = window.ade.onRealtimeUpdate(() => refresh());
     return unsub;
   }, [refresh]);
 

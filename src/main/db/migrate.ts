@@ -144,6 +144,32 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS cost_events_agent_created_idx ON cost_events(agent_id, created_at);
   CREATE INDEX IF NOT EXISTS cost_events_run_idx ON cost_events(run_id);
   `,
+  // Migration 8: agent labors + health_score + issue required_labor + spawned_by_run_id
+  `
+  ALTER TABLE agents
+    ADD COLUMN IF NOT EXISTS labors JSONB NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS health_score INTEGER NOT NULL DEFAULT 100;
+
+  ALTER TABLE issues
+    ADD COLUMN IF NOT EXISTS required_labor TEXT,
+    ADD COLUMN IF NOT EXISTS spawned_by_run_id UUID REFERENCES heartbeat_runs(id) ON DELETE SET NULL;
+
+  CREATE INDEX IF NOT EXISTS issues_required_labor_idx ON issues(required_labor) WHERE required_labor IS NOT NULL;
+  `,
+  // Migration 9: agent_skills table (DF job-skill model)
+  `
+  CREATE TABLE IF NOT EXISTS agent_skills (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    domain TEXT NOT NULL,
+    level INTEGER NOT NULL DEFAULT 1,
+    completions INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS agent_skills_agent_domain_idx ON agent_skills(agent_id, domain);
+  CREATE INDEX IF NOT EXISTS agent_skills_domain_level_idx ON agent_skills(domain, level DESC);
+  `,
 ];
 
 async function runMigrations() {

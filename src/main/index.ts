@@ -50,7 +50,7 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
     const { rows } = await p.query(`
       SELECT id, name, role, title, status, reports_to,
              adapter_type, budget_monthly_cents, spent_monthly_cents,
-             last_heartbeat_at, created_at, updated_at
+             last_heartbeat_at, labors, health_score, created_at, updated_at
       FROM agents ORDER BY name
     `);
     return rows;
@@ -132,9 +132,10 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
 
   ipcMain.handle(IPC.AGENT_CREATE, async (_, input: import("../shared/types.js").CreateAgentInput) => {
     const { rows } = await p.query(
-      `INSERT INTO agents (name, role, title, adapter_type, adapter_config, reports_to, budget_monthly_cents)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, name, role, title, status, reports_to, adapter_type, budget_monthly_cents, spent_monthly_cents, last_heartbeat_at`,
+      `INSERT INTO agents (name, role, title, adapter_type, adapter_config, reports_to, budget_monthly_cents, labors)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, name, role, title, status, reports_to, adapter_type,
+                 budget_monthly_cents, spent_monthly_cents, last_heartbeat_at, labors, health_score`,
       [
         input.name,
         input.role || "general",
@@ -143,6 +144,7 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
         JSON.stringify(input.adapterConfig ?? {}),
         input.reportsTo ?? null,
         input.budgetMonthlyCents ?? 0,
+        JSON.stringify(input.labors ?? {}),
       ]
     );
     return rows[0];
@@ -197,6 +199,49 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
     );
     return { ok: true };
   });
+
+  // Spawn a sub-issue from a running agent (DF sub-agent spawning primitive)
+  ipcMain.handle(IPC.ISSUE_SPAWN_SUB, async (_, input: {
+    runId: string;
+    agentId: string;
+    title: string;
+    description?: string;
+    requiredLabor?: string;
+    parentIssueId?: string;
+  }) => {
+    const issueId = await orch.spawnSubIssue(
+      input.runId,
+      input.agentId,
+      input.title,
+      input.description ?? null,
+      input.requiredLabor ?? null,
+      input.parentIssueId
+    );
+    return { issueId };
+  });
+
+  // Agent skills (DF skill levels per domain)
+  ipcMain.handle(IPC.AGENT_SKILLS, async (_, agentId: string) => {
+    const { rows } = await p.query(
+      `SELECT id, agent_id, domain, level, completions, updated_at
+       FROM agent_skills WHERE agent_id = $1 ORDER BY level DESC`,
+      [agentId]
+    );
+    return rows;
+  });
+
+  // Agent activity history (Legends Mode)
+  ipcMain.handle(IPC.AGENT_HISTORY, async (_, agentId: string, limit = 50) => {
+    const { rows } = await p.query(
+      `SELECT id, actor_type, actor_id, action, target_type, target_id, metadata, created_at
+       FROM activity_log
+       WHERE actor_id = $1 OR target_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [agentId, limit]
+    );
+    return rows;
+  });
 }
 
 app.whenReady().then(async () => {
@@ -213,6 +258,21 @@ app.whenReady().then(async () => {
     });
     orchestrator.on("agentStatusChanged", (agentId, status) => {
       mainWindow?.webContents.send(IPC.REALTIME_UPDATE, { type: "agentStatus", agentId, status });
+    });
+    orchestrator.on("issueClaimed", (issueId, agentId) => {
+      mainWindow?.webContents.send(IPC.REALTIME_UPDATE, { type: "issueClaimed", issueId, agentId });
+    });
+    orchestrator.on("issueReleased", (issueId, reason) => {
+      mainWindow?.webContents.send(IPC.REALTIME_UPDATE, { type: "issueReleased", issueId, reason });
+    });
+    orchestrator.on("subIssueSpawned", (parentIssueId, childIssueId, agentId) => {
+      mainWindow?.webContents.send(IPC.REALTIME_UPDATE, { type: "subIssueSpawned", parentIssueId, childIssueId, agentId });
+    });
+    orchestrator.on("orphanRecovered", (count) => {
+      mainWindow?.webContents.send(IPC.REALTIME_UPDATE, { type: "orphanRecovered", count });
+    });
+    orchestrator.on("healthScoreUpdated", (agentId, score) => {
+      mainWindow?.webContents.send(IPC.REALTIME_UPDATE, { type: "healthScore", agentId, score });
     });
 
     registerIpcHandlers(pool, orchestrator);

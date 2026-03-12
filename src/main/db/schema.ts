@@ -38,6 +38,11 @@ export const agents = pgTable(
     status: text("status").notNull().default("idle"),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
+    // DF labor-enablement: { "backend": true, "devops": true, "design": false }
+    // Issues with required_labor only assigned to agents with that labor enabled
+    labors: jsonb("labors").$type<Record<string, boolean>>().notNull().default({}),
+    // Computed health 0-100: degrades on consecutive failures, budget exhaustion, staleness
+    healthScore: integer("health_score").notNull().default(100),
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
@@ -163,6 +168,10 @@ export const issues = pgTable(
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
     requestDepth: integer("request_depth").notNull().default(0),
+    // DF labor-match: only agents with labors->>required_labor = 'true' can claim
+    requiredLabor: text("required_labor"),
+    // sub-agent spawning: which run created this sub-issue
+    spawnedByRunId: uuid("spawned_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -195,6 +204,28 @@ export const activityLog = pgTable(
     actorIdx: index("activity_log_actor_idx").on(t.actorType, t.actorId),
     targetIdx: index("activity_log_target_idx").on(t.targetType, t.targetId),
     createdIdx: index("activity_log_created_idx").on(t.createdAt),
+  })
+);
+
+// ─── Agent Skills ─────────────────────────────────────────────────────────────
+// DF job-skill model: completions increment domain skill level.
+// Claim query orders by skill DESC so specialists get routed first.
+export const agentSkills = pgTable(
+  "agent_skills",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    // domain matches issue.required_labor (e.g. "backend", "devops", "design")
+    domain: text("domain").notNull(),
+    // increments on successful issue completion in this domain
+    level: integer("level").notNull().default(1),
+    // total completions — for display and tiebreaking
+    completions: integer("completions").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    agentDomainIdx: uniqueIndex("agent_skills_agent_domain_idx").on(t.agentId, t.domain),
   })
 );
 

@@ -13,6 +13,7 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { AgentRow, AgentStats } from "../hooks/useAgents";
+// AgentRow already has health_score from updated hook
 
 interface Props {
   agents: AgentRow[];
@@ -295,6 +296,11 @@ export default function AgentCanvas({ agents, stats, selected, onSelect, onRelin
             const isSelected = selected?.id === agent.id;
             const isHovered = hoveredId === agent.id;
             const color = STATUS_COLORS[agent.status] ?? STATUS_COLORS.idle;
+            // DF health degradation — border shifts amber→red as health drops
+            const health = (agent as AgentRow & { health_score?: number }).health_score ?? 100;
+            const healthColor = health >= 70 ? color
+              : health >= 40 ? "var(--accent-amber)"
+              : "var(--accent-red)";
             const budgetUsed = s && s.budgetMonthlyCents > 0
               ? s.spentMonthlyCents / s.budgetMonthlyCents
               : 0;
@@ -368,7 +374,7 @@ export default function AgentCanvas({ agents, stats, selected, onSelect, onRelin
                 <circle
                   r={NODE_RADIUS}
                   fill={isHovered || isSelected ? "var(--bg-elevated)" : "var(--bg-surface)"}
-                  stroke={color}
+                  stroke={healthColor}
                   strokeWidth={isRunning ? 2 : 1}
                   style={{
                     filter: isRunning ? "url(#glow-green)" : "none",
@@ -431,6 +437,25 @@ export default function AgentCanvas({ agents, stats, selected, onSelect, onRelin
                   >
                     ● running
                   </text>
+                )}
+
+                {/* Health bar — only visible when degraded (DF performance model) */}
+                {health < 100 && (
+                  <g transform={`translate(${-NODE_RADIUS}, ${NODE_RADIUS + 36})`}>
+                    <rect
+                      width={NODE_RADIUS * 2}
+                      height={3}
+                      rx={1.5}
+                      fill="var(--bg-elevated)"
+                    />
+                    <rect
+                      width={Math.max(2, (health / 100) * NODE_RADIUS * 2)}
+                      height={3}
+                      rx={1.5}
+                      fill={healthColor}
+                      opacity={0.7}
+                    />
+                  </g>
                 )}
 
                 {/* Connector dot — drag handle to relink reports_to */}

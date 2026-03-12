@@ -18,6 +18,11 @@ export default function App() {
     await refresh();
   };
 
+  const handleRelink = async (agentId: string, reportsTo: string | null) => {
+    await window.ade.agents.updateReportsTo(agentId, reportsTo);
+    await refresh();
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
       <TopBar
@@ -34,6 +39,7 @@ export default function App() {
             stats={stats}
             selected={selected}
             onSelect={setSelected}
+            onRelink={handleRelink}
           />
           {/* Right sidebar — selected agent detail */}
           {selected && (

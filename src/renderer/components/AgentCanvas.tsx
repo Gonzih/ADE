@@ -19,6 +19,7 @@ interface Props {
   stats: Map<string, AgentStats>;
   selected: AgentRow | null;
   onSelect: (agent: AgentRow) => void;
+  onRelink?: (agentId: string, newReportsTo: string | null) => void;
 }
 
 interface NodeLayout {
@@ -92,11 +93,16 @@ function layoutTree(agents: AgentRow[]): NodeLayout[] {
   return layouts;
 }
 
-export default function AgentCanvas({ agents, stats, selected, onSelect }: Props) {
+export default function AgentCanvas({ agents, stats, selected, onSelect, onRelink }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [size, setSize] = useState({ w: 800, h: 600 });
+
+  // Drag-to-connect state
+  const [dragFrom, setDragFrom] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const dragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -150,15 +156,39 @@ export default function AgentCanvas({ agents, stats, selected, onSelect }: Props
   }, []);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // Update drag-connect wire position
+    if (dragFrom) {
+      setDragPos({ x: e.clientX, y: e.clientY });
+      return;
+    }
     if (!dragging.current) return;
     const dx = e.clientX - lastMouse.current.x;
     const dy = e.clientY - lastMouse.current.y;
     lastMouse.current = { x: e.clientX, y: e.clientY };
     setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
-  }, []);
+  }, [dragFrom]);
 
   const handleMouseUp = useCallback(() => {
     dragging.current = false;
+    // Complete drag-connect — only fires if dropped on a valid target node
+    if (dragFrom && dropTarget && dropTarget !== dragFrom.id) {
+      onRelink?.(dragFrom.id, dropTarget);
+    }
+    // Empty-space drop = cancelled (no accidental disconnects)
+    setDragFrom(null);
+    setDragPos(null);
+    setDropTarget(null);
+  }, [dragFrom, dropTarget, onRelink]);
+
+  // Start drag-connect from node connector dot (shift+drag or right-drag on node)
+  const startConnectDrag = useCallback((e: React.MouseEvent, agentId: string, nodeX: number, nodeY: number) => {
+    e.stopPropagation();
+    e.preventDefault();
+    // Convert node coords to screen coords
+    const svgRect = svgRef.current?.getBoundingClientRect();
+    if (!svgRect) return;
+    setDragFrom({ id: agentId, x: nodeX, y: nodeY });
+    setDragPos({ x: e.clientX, y: e.clientY });
   }, []);
 
   const byId = new Map(layouts.map((l) => [l.agent.id, l]));
@@ -212,6 +242,29 @@ export default function AgentCanvas({ agents, stats, selected, onSelect }: Props
           </marker>
         </defs>
 
+        {/* Drag-connect wire overlay — in screen space, NOT in transform group */}
+        {dragFrom && dragPos && (() => {
+          const fromLayout = byId.get(dragFrom.id);
+          if (!fromLayout) return null;
+          const svgRect = svgRef.current?.getBoundingClientRect();
+          if (!svgRect) return null;
+          const sx = fromLayout.x * zoom + pan.x + svgRect.left;
+          const sy = fromLayout.y * zoom + pan.y + svgRect.top;
+          return (
+            <line
+              x1={sx - svgRect.left}
+              y1={sy - svgRect.top}
+              x2={dragPos.x - svgRect.left}
+              y2={dragPos.y - svgRect.top}
+              stroke="var(--accent-cyan)"
+              strokeWidth="2"
+              strokeDasharray="6,4"
+              opacity="0.8"
+              style={{ pointerEvents: "none" }}
+            />
+          );
+        })()}
+
         <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
           {/* Connection lines (reporting tree) */}
           {layouts.map(({ agent, x, y }) => {
@@ -251,11 +304,29 @@ export default function AgentCanvas({ agents, stats, selected, onSelect }: Props
                 key={agent.id}
                 className="agent-node"
                 transform={`translate(${x},${y})`}
-                onClick={() => onSelect(agent)}
-                onMouseEnter={() => setHoveredId(agent.id)}
-                onMouseLeave={() => setHoveredId(null)}
-                style={{ cursor: "pointer" }}
+                onClick={() => { if (!dragFrom) onSelect(agent); }}
+                onMouseEnter={() => {
+                  setHoveredId(agent.id);
+                  if (dragFrom && dragFrom.id !== agent.id) setDropTarget(agent.id);
+                }}
+                onMouseLeave={() => {
+                  setHoveredId(null);
+                  if (dragFrom) setDropTarget(null);
+                }}
+                style={{ cursor: dragFrom ? "crosshair" : "pointer" }}
               >
+                {/* Drop target highlight ring */}
+                {dropTarget === agent.id && (
+                  <circle
+                    r={NODE_RADIUS + 8}
+                    fill="none"
+                    stroke="var(--accent-cyan)"
+                    strokeWidth="2"
+                    opacity="0.9"
+                    style={{ animation: "pulse-ring 1s ease-out infinite" }}
+                  />
+                )}
+
                 {/* Pulse ring for running agents */}
                 {isRunning && (
                   <circle
@@ -360,6 +431,24 @@ export default function AgentCanvas({ agents, stats, selected, onSelect }: Props
                   >
                     ● running
                   </text>
+                )}
+
+                {/* Connector dot — drag handle to relink reports_to */}
+                {(isHovered || dragFrom?.id === agent.id) && onRelink && (
+                  <g
+                    transform={`translate(0, ${NODE_RADIUS})`}
+                    onMouseDown={(e) => startConnectDrag(e, agent.id, x, y)}
+                    style={{ cursor: "crosshair" }}
+                  >
+                    <circle
+                      r={6}
+                      fill="var(--accent-cyan)"
+                      stroke="var(--bg-void)"
+                      strokeWidth="2"
+                      opacity="0.9"
+                    />
+                    <circle r={3} fill="var(--bg-void)" />
+                  </g>
                 )}
 
                 {/* Open issues badge */}

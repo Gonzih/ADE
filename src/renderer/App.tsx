@@ -12,6 +12,12 @@ export default function App() {
   const [selected, setSelected] = useState<AgentRow | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
+  const handleDelete = async (agentId: string) => {
+    await window.ade.agents.delete(agentId);
+    setSelected(null);
+    await refresh();
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
       <TopBar
@@ -39,6 +45,7 @@ export default function App() {
               onPause={pause}
               onResume={resume}
               onClose={() => setSelected(null)}
+              onDelete={handleDelete}
             />
           )}
         </div>

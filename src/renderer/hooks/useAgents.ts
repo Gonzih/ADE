@@ -10,6 +10,15 @@ export interface CreateAgentInput {
   budgetMonthlyCents?: number;
 }
 
+export interface RunEventRow {
+  id: string;
+  run_id: string;
+  seq: number;
+  event_type: string;
+  body: Record<string, unknown>;
+  created_at: string;
+}
+
 declare global {
   interface Window {
     ade: {
@@ -21,9 +30,15 @@ declare global {
         pause: (agentId: string) => Promise<{ ok: boolean }>;
         resume: (agentId: string) => Promise<{ ok: boolean }>;
         create: (input: CreateAgentInput) => Promise<AgentRow>;
+        delete: (agentId: string) => Promise<{ ok: boolean }>;
+        updateReportsTo: (agentId: string, reportsTo: string | null) => Promise<{ ok: boolean }>;
+      };
+      runs: {
+        events: (runId: string, afterSeq: number) => Promise<RunEventRow[]>;
       };
       issues: {
         list: (agentId?: string) => Promise<IssueRow[]>;
+        updateStatus: (issueId: string, status: string) => Promise<{ ok: boolean }>;
       };
       onRealtimeUpdate: (cb: (data: RealtimeEvent) => void) => () => void;
       onDbReady: (cb: (ready: boolean) => void) => void;

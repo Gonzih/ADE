@@ -148,6 +148,35 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
     return rows[0];
   });
 
+  ipcMain.handle(IPC.AGENT_DELETE, async (_, agentId: string) => {
+    // Soft-delete: null out reports_to children, then delete agent
+    await p.query(`UPDATE agents SET reports_to = NULL WHERE reports_to = $1`, [agentId]);
+    await p.query(`UPDATE issues SET assignee_agent_id = NULL WHERE assignee_agent_id = $1`, [agentId]);
+    await p.query(`DELETE FROM agents WHERE id = $1`, [agentId]);
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.AGENT_UPDATE_REPORTS_TO, async (_, agentId: string, reportsTo: string | null) => {
+    await p.query(
+      `UPDATE agents SET reports_to = $1, updated_at = NOW() WHERE id = $2`,
+      [reportsTo, agentId]
+    );
+    return { ok: true };
+  });
+
+  // Run events — Kafka-offset model: afterSeq = consumer offset
+  ipcMain.handle(IPC.RUN_EVENTS, async (_, runId: string, afterSeq: number) => {
+    const { rows } = await p.query(
+      `SELECT id, run_id, seq, event_type, body, created_at
+       FROM heartbeat_run_events
+       WHERE run_id = $1 AND seq > $2
+       ORDER BY seq ASC
+       LIMIT 200`,
+      [runId, afterSeq]
+    );
+    return rows;
+  });
+
   ipcMain.handle(IPC.ISSUES_LIST, async (_, agentId?: string) => {
     const where = agentId ? `WHERE assignee_agent_id = $1` : "";
     const { rows } = await p.query(
@@ -156,6 +185,17 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
       agentId ? [agentId] : []
     );
     return rows;
+  });
+
+  ipcMain.handle(IPC.ISSUE_UPDATE_STATUS, async (_, issueId: string, status: string) => {
+    const completedAt = status === "done" ? "NOW()" : "NULL";
+    await p.query(
+      `UPDATE issues SET status = $1, updated_at = NOW(),
+       completed_at = ${completedAt}
+       WHERE id = $2`,
+      [status, issueId]
+    );
+    return { ok: true };
   });
 }
 

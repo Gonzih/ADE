@@ -91,7 +91,11 @@ export const IPC = {
   AGENT_PAUSE: "agent:pause",
   AGENT_RESUME: "agent:resume",
   AGENT_CREATE: "agent:create",
+  AGENT_DELETE: "agent:delete",
+  AGENT_UPDATE_REPORTS_TO: "agent:update-reports-to",
+  RUN_EVENTS: "run:events",
   ISSUES_LIST: "issues:list",
+  ISSUE_UPDATE_STATUS: "issue:update-status",
   DB_READY: "db:ready",
   REALTIME_UPDATE: "realtime:update",
 } as const;

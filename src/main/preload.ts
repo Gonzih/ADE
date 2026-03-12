@@ -10,9 +10,17 @@ contextBridge.exposeInMainWorld("ade", {
     pause: (agentId: string) => ipcRenderer.invoke(IPC.AGENT_PAUSE, agentId),
     resume: (agentId: string) => ipcRenderer.invoke(IPC.AGENT_RESUME, agentId),
     create: (input: CreateAgentInput) => ipcRenderer.invoke(IPC.AGENT_CREATE, input),
+    delete: (agentId: string) => ipcRenderer.invoke(IPC.AGENT_DELETE, agentId),
+    updateReportsTo: (agentId: string, reportsTo: string | null) =>
+      ipcRenderer.invoke(IPC.AGENT_UPDATE_REPORTS_TO, agentId, reportsTo),
+  },
+  runs: {
+    events: (runId: string, afterSeq: number) => ipcRenderer.invoke(IPC.RUN_EVENTS, runId, afterSeq),
   },
   issues: {
     list: (agentId?: string) => ipcRenderer.invoke(IPC.ISSUES_LIST, agentId),
+    updateStatus: (issueId: string, status: string) =>
+      ipcRenderer.invoke(IPC.ISSUE_UPDATE_STATUS, issueId, status),
   },
   onRealtimeUpdate: (cb: (data: Record<string, unknown>) => void) => {
     const handler = (_: Electron.IpcRendererEvent, data: Record<string, unknown>) => cb(data);

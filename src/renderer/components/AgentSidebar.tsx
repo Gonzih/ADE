@@ -7,6 +7,7 @@
 
 import { useState, useEffect } from "react";
 import type { AgentRow, AgentStats, RunRow } from "../hooks/useAgents";
+import RunLogViewer from "./RunLogViewer";
 
 interface Props {
   agent: AgentRow;
@@ -16,6 +17,7 @@ interface Props {
   onPause: (agentId: string) => void;
   onResume: (agentId: string) => void;
   onClose: () => void;
+  onDelete?: (agentId: string) => void;
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -35,9 +37,11 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   timed_out: "var(--accent-amber)",
 };
 
-export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, onResume, onClose }: Props) {
+export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, onResume, onClose, onDelete }: Props) {
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [wakeupReason, setWakeupReason] = useState("");
+  const [selectedRun, setSelectedRun] = useState<RunRow | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!window.ade) return;
@@ -196,15 +200,46 @@ export default function AgentSidebar({ agent, stats, agents, onWakeup, onPause, 
           </div>
         </Section>
 
-        {/* Recent runs */}
+        {/* Recent runs — click to open log viewer */}
         {runs.length > 0 && (
-          <Section title={`Recent Runs (${runs.length})`}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 240, overflow: "auto" }}>
+          <Section title={`Runs (${runs.length})`}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: selectedRun ? 120 : 240, overflow: "auto" }}>
               {runs.slice(0, 20).map((r) => (
-                <RunRow key={r.id} run={r} />
+                <div
+                  key={r.id}
+                  onClick={() => setSelectedRun(selectedRun?.id === r.id ? null : r)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <RunRow
+                    run={r}
+                    live={r.id === stats?.activeRun?.id}
+                    selected={selectedRun?.id === r.id}
+                  />
+                </div>
               ))}
             </div>
+            {/* Inline log viewer */}
+            {selectedRun && (
+              <div style={{ marginTop: 8, height: 240 }}>
+                <RunLogViewer run={selectedRun} agentId={agent.id} />
+              </div>
+            )}
           </Section>
+        )}
+
+        {/* Delete */}
+        {onDelete && (
+          <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+            {confirmDelete ? (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ fontSize: 11, color: "var(--accent-red)" }}>confirm delete?</span>
+                <CtrlButton label="Yes, delete" color="var(--accent-red)" onClick={() => onDelete(agent.id)} />
+                <CtrlButton label="Cancel" color="var(--text-dim)" onClick={() => setConfirmDelete(false)} />
+              </div>
+            ) : (
+              <CtrlButton label="Delete agent" color="var(--accent-red)" onClick={() => setConfirmDelete(true)} />
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -287,7 +322,7 @@ function Metric({ label, value, color }: { label: string; value: number; color?:
   );
 }
 
-function RunRow({ run, live }: { run: RunRow; live?: boolean }) {
+function RunRow({ run, live, selected }: { run: RunRow; live?: boolean; selected?: boolean }) {
   const color = RUN_STATUS_COLOR[run.status] ?? "var(--text-dim)";
   const elapsed = run.started_at
     ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 1000)
@@ -296,9 +331,10 @@ function RunRow({ run, live }: { run: RunRow; live?: boolean }) {
   return (
     <div style={{
       padding: "6px 8px",
-      background: "var(--bg-elevated)",
+      background: selected ? "var(--bg-hover)" : "var(--bg-elevated)",
       borderRadius: "var(--radius-sm)",
-      border: live ? `1px solid ${color}30` : "1px solid transparent",
+      border: live ? `1px solid ${color}40` : selected ? `1px solid var(--accent-blue)40` : "1px solid transparent",
+      transition: "background 0.1s",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color }}>{run.status}</span>

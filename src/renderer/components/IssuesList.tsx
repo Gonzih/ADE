@@ -4,8 +4,10 @@
  * Collapsible. DB-as-bus: status colors map to issue status enum.
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { AgentRow, IssueRow } from "../hooks/useAgents";
+
+const STATUS_CYCLE: string[] = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"];
 
 interface Props {
   selected: AgentRow | null;
@@ -34,14 +36,25 @@ export default function IssuesList({ selected, agents }: Props) {
 
   const agentById = new Map(agents.map((a) => [a.id, a]));
 
-  useEffect(() => {
+  const fetchIssues = useCallback(() => {
     if (!window.ade) return;
     window.ade.issues.list(selected?.id).then(setIssues).catch(console.error);
-    const interval = setInterval(() => {
-      window.ade.issues.list(selected?.id).then(setIssues).catch(console.error);
-    }, 3000);
-    return () => clearInterval(interval);
   }, [selected?.id]);
+
+  useEffect(() => {
+    fetchIssues();
+    const interval = setInterval(fetchIssues, 3000);
+    return () => clearInterval(interval);
+  }, [fetchIssues]);
+
+  const cycleStatus = async (e: React.MouseEvent, issue: IssueRow) => {
+    e.stopPropagation();
+    if (!window.ade) return;
+    const idx = STATUS_CYCLE.indexOf(issue.status);
+    const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+    await window.ade.issues.updateStatus(issue.id, next);
+    fetchIssues();
+  };
 
   const open = issues.filter((i) => !["done", "cancelled"].includes(i.status));
   const done = issues.filter((i) => i.status === "done");
@@ -124,11 +137,21 @@ export default function IssuesList({ selected, agents }: Props) {
                     }}
                   >
                     <td style={{ padding: "6px 12px" }}>
-                      <span style={{
-                        fontSize: 10,
-                        fontFamily: "var(--font-mono)",
-                        color: STATUS_COLOR[issue.status] ?? "var(--text-dim)",
-                      }}>
+                      <span
+                        onClick={(e) => cycleStatus(e, issue)}
+                        title="Click to advance status"
+                        style={{
+                          fontSize: 10,
+                          fontFamily: "var(--font-mono)",
+                          color: STATUS_COLOR[issue.status] ?? "var(--text-dim)",
+                          cursor: "pointer",
+                          padding: "2px 5px",
+                          borderRadius: 3,
+                          border: `1px solid ${STATUS_COLOR[issue.status] ?? "var(--text-dim)"}30`,
+                        }}
+                        onMouseEnter={(e) => ((e.target as HTMLSpanElement).style.borderColor = STATUS_COLOR[issue.status] ?? "var(--text-dim)")}
+                        onMouseLeave={(e) => ((e.target as HTMLSpanElement).style.borderColor = `${STATUS_COLOR[issue.status] ?? "var(--text-dim)"}30`)}
+                      >
                         {issue.status}
                       </span>
                     </td>

@@ -258,6 +258,9 @@ export class AgentOrchestrator extends EventEmitter {
         case "mock":
           await this.runMockAdapter(agentId, runId, adapterConfig);
           break;
+        case "http":
+          await this.runHttpAdapter(agentId, runId, adapterConfig);
+          break;
         default:
           await this.finishRun(runId, agentId, "failed", 1, `Unknown adapter: ${adapterType}`);
       }
@@ -326,6 +329,106 @@ export class AgentOrchestrator extends EventEmitter {
         resolve();
       });
     });
+  }
+
+  /**
+   * HTTP adapter — POST to a webhook URL with run context.
+   * Agent endpoint must return JSON: { status: "succeeded"|"failed", message?: string }
+   * Supports polling: if response has { status: "running", pollUrl } we poll until done.
+   */
+  private async runHttpAdapter(
+    agentId: string,
+    runId: string,
+    config: Record<string, unknown>
+  ): Promise<void> {
+    const url = config.url as string;
+    const method = ((config.method as string) ?? "POST").toUpperCase();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-ADE-Agent-Id": agentId,
+      "X-ADE-Run-Id": runId,
+      ...((config.headers as Record<string, string>) ?? {}),
+    };
+    const timeout = (config.timeoutMs as number) ?? 30_000;
+    const pollIntervalMs = (config.pollIntervalMs as number) ?? 1000;
+    const maxPollAttempts = (config.maxPollAttempts as number) ?? 60;
+
+    if (!url) {
+      await this.finishRun(runId, agentId, "failed", 1, "HTTP adapter: no url configured");
+      return;
+    }
+
+    await this.appendEvent(runId, "log_chunk", { text: `[http] ${method} ${url}` });
+
+    // Fetch with timeout
+    const fetchWithTimeout = async (fetchUrl: string, body?: unknown): Promise<Response> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      try {
+        const res = await fetch(fetchUrl, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
+        });
+        return res;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    try {
+      const payload = {
+        agentId,
+        runId,
+        ...(config.payload as Record<string, unknown> ?? {}),
+      };
+
+      let res = await fetchWithTimeout(url, payload);
+      let body: Record<string, unknown> = {};
+
+      try {
+        body = await res.json() as Record<string, unknown>;
+      } catch {
+        body = { status: res.ok ? "succeeded" : "failed", message: await res.text().catch(() => "") };
+      }
+
+      await this.appendEvent(runId, "log_chunk", {
+        text: `[http] response ${res.status}: ${JSON.stringify(body).slice(0, 200)}`,
+      });
+
+      // Handle polling mode
+      if (body.status === "running" && typeof body.pollUrl === "string") {
+        let attempts = 0;
+        while (attempts < maxPollAttempts) {
+          await new Promise((r) => setTimeout(r, pollIntervalMs));
+          const pollRes = await fetchWithTimeout(body.pollUrl as string);
+          body = await pollRes.json() as Record<string, unknown>;
+          await this.appendEvent(runId, "log_chunk", {
+            text: `[http] poll ${attempts + 1}: ${JSON.stringify(body).slice(0, 200)}`,
+          });
+          if (body.status !== "running") break;
+          attempts++;
+        }
+        if (attempts >= maxPollAttempts) {
+          await this.finishRun(runId, agentId, "timed_out" as "failed", 1, "HTTP adapter: poll timeout");
+          return;
+        }
+      }
+
+      const success = body.status === "succeeded" || res.ok && !body.status;
+      const message = typeof body.message === "string" ? body.message : undefined;
+      await this.finishRun(
+        runId, agentId,
+        success ? "succeeded" : "failed",
+        success ? 0 : 1,
+        success ? undefined : (message ?? `HTTP ${res.status}`),
+        message
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await this.finishRun(runId, agentId, "failed", 1, `[http] ${msg}`);
+    }
   }
 
   private async appendEvent(

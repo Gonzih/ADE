@@ -72,6 +72,16 @@ export interface AgentStats {
   openIssues: number;
 }
 
+export interface CreateAgentInput {
+  name: string;
+  role: string;
+  title: string | null;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  reportsTo: string | null;
+  budgetMonthlyCents?: number;
+}
+
 // IPC channel names
 export const IPC = {
   AGENTS_LIST: "agents:list",
@@ -80,6 +90,7 @@ export const IPC = {
   AGENT_WAKEUP: "agent:wakeup",
   AGENT_PAUSE: "agent:pause",
   AGENT_RESUME: "agent:resume",
+  AGENT_CREATE: "agent:create",
   ISSUES_LIST: "issues:list",
   DB_READY: "db:ready",
   REALTIME_UPDATE: "realtime:update",

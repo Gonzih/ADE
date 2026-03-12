@@ -1,9 +1,10 @@
 interface TopBarProps {
   agentCount: number;
   runningCount: number;
+  onNewAgent: () => void;
 }
 
-export default function TopBar({ agentCount, runningCount }: TopBarProps) {
+export default function TopBar({ agentCount, runningCount, onNewAgent }: TopBarProps) {
   return (
     <div style={{
       height: 44,
@@ -36,8 +37,25 @@ export default function TopBar({ agentCount, runningCount }: TopBarProps) {
 
       <div style={{ flex: 1 }} />
 
-      {/* Stats */}
+      {/* Actions + Stats */}
       <div style={{ display: "flex", gap: 20, alignItems: "center", WebkitAppRegion: "no-drag" as const }}>
+        <button
+          onClick={onNewAgent}
+          style={{
+            padding: "4px 12px",
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--accent-green)",
+            color: "var(--accent-green)",
+            background: "rgba(0,255,136,0.08)",
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) => ((e.target as HTMLButtonElement).style.background = "rgba(0,255,136,0.15)")}
+          onMouseLeave={(e) => ((e.target as HTMLButtonElement).style.background = "rgba(0,255,136,0.08)")}
+        >
+          + agent
+        </button>
         <Stat label="agents" value={agentCount} color="var(--text-secondary)" />
         <Stat
           label="running"
@@ -46,6 +64,7 @@ export default function TopBar({ agentCount, runningCount }: TopBarProps) {
           glow={runningCount > 0}
         />
       </div>
+
     </div>
   );
 }

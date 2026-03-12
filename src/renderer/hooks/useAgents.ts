@@ -1,5 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
+export interface CreateAgentInput {
+  name: string;
+  role: string;
+  title: string | null;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  reportsTo: string | null;
+  budgetMonthlyCents?: number;
+}
+
 declare global {
   interface Window {
     ade: {
@@ -10,6 +20,7 @@ declare global {
         wakeup: (agentId: string, reason?: string) => Promise<{ wakeupId: string }>;
         pause: (agentId: string) => Promise<{ ok: boolean }>;
         resume: (agentId: string) => Promise<{ ok: boolean }>;
+        create: (input: CreateAgentInput) => Promise<AgentRow>;
       };
       issues: {
         list: (agentId?: string) => Promise<IssueRow[]>;

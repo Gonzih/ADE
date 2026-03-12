@@ -130,6 +130,24 @@ function registerIpcHandlers(p: Pool, orch: AgentOrchestrator): void {
     return { ok: true };
   });
 
+  ipcMain.handle(IPC.AGENT_CREATE, async (_, input: import("../shared/types.js").CreateAgentInput) => {
+    const { rows } = await p.query(
+      `INSERT INTO agents (name, role, title, adapter_type, adapter_config, reports_to, budget_monthly_cents)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, name, role, title, status, reports_to, adapter_type, budget_monthly_cents, spent_monthly_cents, last_heartbeat_at`,
+      [
+        input.name,
+        input.role || "general",
+        input.title ?? null,
+        input.adapterType || "mock",
+        JSON.stringify(input.adapterConfig ?? {}),
+        input.reportsTo ?? null,
+        input.budgetMonthlyCents ?? 0,
+      ]
+    );
+    return rows[0];
+  });
+
   ipcMain.handle(IPC.ISSUES_LIST, async (_, agentId?: string) => {
     const where = agentId ? `WHERE assignee_agent_id = $1` : "";
     const { rows } = await p.query(

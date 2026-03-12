@@ -2,7 +2,7 @@
   "name": "ade",
   "version": "0.1.0",
   "description": "Agent Development Environment — the IDE for teams of AI agents",
-  "main": "dist/main/index.js",
+  "main": "dist/main/main/index.js",
   "scripts": {
     "dev:renderer": "vite",
     "dev:main": "tsc -p tsconfig.main.json --watch",
@@ -14,7 +14,9 @@
     "dist": "npm run build && electron-builder",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npx ts-node src/main/db/migrate.ts",
-    "typecheck": "tsc --noEmit"
+    "db:seed": "npx ts-node src/main/db/seed.ts",
+    "db:setup": "npm run db:migrate && npm run db:seed",
+    "typecheck": "npx tsc -p tsconfig.main.json --noEmit && npx tsc -p tsconfig.renderer.json --noEmit"
   },
   "keywords": [
     "agents",

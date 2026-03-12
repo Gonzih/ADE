@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC } from "../shared/types.js";
+import { IPC, type CreateAgentInput } from "../shared/types.js";
 
 contextBridge.exposeInMainWorld("ade", {
   agents: {
@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("ade", {
     wakeup: (agentId: string, reason?: string) => ipcRenderer.invoke(IPC.AGENT_WAKEUP, agentId, reason),
     pause: (agentId: string) => ipcRenderer.invoke(IPC.AGENT_PAUSE, agentId),
     resume: (agentId: string) => ipcRenderer.invoke(IPC.AGENT_RESUME, agentId),
+    create: (input: CreateAgentInput) => ipcRenderer.invoke(IPC.AGENT_CREATE, input),
   },
   issues: {
     list: (agentId?: string) => ipcRenderer.invoke(IPC.ISSUES_LIST, agentId),
